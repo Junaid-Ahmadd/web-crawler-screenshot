@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  backend:
+    image: ghcr.io/Junaid-Ahmadd/web-crawler-screenshot-backend:main
+    ports:
+      - "8000:8000"
+    networks:
+      - app-network
+
+  app:
+    image: ghcr.io/Junaid-Ahmadd/web-crawler-screenshot-app:main
+    ports:
+      - "3000:3000"
+    depends_on:
+      - backend
+    networks:
+      - app-network
+
+networks:
+  app-network:
+    driver: bridge

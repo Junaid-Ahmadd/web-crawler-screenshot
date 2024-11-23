@@ -1,0 +1,21 @@
+{
+  "name": "web-crawler-screenshot",
+  "version": "1.0.0",
+  "description": "Web crawler and screenshot application",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "build": "cd frontend && npm install && npm run build",
+    "dev": "nodemon server.js"
+  },
+  "dependencies": {
+    "express": "^4.18.2",
+    "playwright": "^1.38.0"
+  },
+  "devDependencies": {
+    "nodemon": "^3.0.1"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
