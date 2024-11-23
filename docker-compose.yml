@@ -2,20 +2,27 @@ version: '3.8'
 
 services:
   backend:
-    image: ghcr.io/Junaid-Ahmadd/web-crawler-screenshot-backend:main
+    build: 
+      context: ./backend
+      dockerfile: Dockerfile
     ports:
       - "8000:8000"
     networks:
       - app-network
+    restart: unless-stopped
 
   app:
-    image: ghcr.io/Junaid-Ahmadd/web-crawler-screenshot-app:main
+    build: .
     ports:
       - "3000:3000"
     depends_on:
       - backend
     networks:
       - app-network
+    restart: unless-stopped
+    cap_add:
+      - SYS_ADMIN
+    shm_size: '1gb'
 
 networks:
   app-network:

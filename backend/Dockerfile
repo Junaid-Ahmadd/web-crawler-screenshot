@@ -1,13 +1,18 @@
-FROM denoland/deno:1.39.1
+# Use official Deno image
+FROM denoland/deno:1.38.3
 
+# Set working directory
 WORKDIR /app
 
-# Cache the dependencies
+# Copy dependency files
 COPY dependencies.ts .
 RUN deno cache dependencies.ts
 
 # Copy the rest of the application
 COPY . .
+
+# Compile the app
+RUN deno cache server.ts
 
 EXPOSE 8000
 
