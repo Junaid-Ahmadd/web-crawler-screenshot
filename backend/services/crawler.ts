@@ -1,5 +1,6 @@
 import { HTMLRewriter } from "https://deno.land/x/html_rewriter@v0.1.0-pre.17/index.ts";
 import { ResourceManager } from "./resource_manager.ts";
+import { chromium } from "https://deno.land/x/playwright@9.0.2/mod.ts";
 
 export class CrawlerService {
   private visitedUrls = new Set<string>();
@@ -26,7 +27,7 @@ export class CrawlerService {
     this.ws = ws;
   }
 
-  private sendUpdate(type: "link" | "error" | "info" | "manifest" | "processed_content" | "crawling_complete" | "css_analysis" | "css_manifest" | "css_found", data: unknown) {
+  private sendUpdate(type: "link" | "error" | "info" | "manifest" | "processed_content" | "crawling_complete" | "css_analysis" | "css_manifest" | "css_found" | "screenshot", data: unknown) {
     if (this.ws.readyState === WebSocket.OPEN) {
       this.ws.send(JSON.stringify({ type, data }));
     }
@@ -207,6 +208,47 @@ export class CrawlerService {
 
       console.log('🔍 Processing:', url);
       this.sendUpdate("link", url);
+
+      // Take screenshot using Playwright
+      try {
+        const browser = await chromium.launch({
+          args: ['--no-sandbox'],
+          executablePath: '/usr/bin/google-chrome-stable'
+        });
+        const context = await browser.newContext({
+          viewport: { width: 1280, height: 800 }
+        });
+        const page = await context.newPage();
+        
+        // Set a reasonable timeout
+        await page.setDefaultTimeout(30000);
+        
+        console.log('Taking screenshot of:', url);
+        await page.goto(url, { waitUntil: 'networkidle' });
+        
+        // Wait for content to load
+        await page.waitForLoadState('domcontentloaded');
+        
+        // Take screenshot
+        const screenshot = await page.screenshot({
+          type: 'jpeg',
+          quality: 80,
+          fullPage: true
+        });
+        
+        // Send screenshot to client
+        this.sendUpdate("screenshot", {
+          url,
+          image: Array.from(screenshot),
+          timestamp: Date.now()
+        });
+        
+        await context.close();
+        await browser.close();
+      } catch (error) {
+        console.error('Screenshot error:', error);
+        this.sendUpdate("error", `Failed to take screenshot of ${url}: ${error.message}`);
+      }
 
       const fetchOptions = {
         headers: {
