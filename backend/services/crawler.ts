@@ -27,7 +27,9 @@ export class CrawlerService {
   }
 
   private sendUpdate(type: "link" | "error" | "info" | "manifest" | "processed_content" | "crawling_complete" | "css_analysis" | "css_manifest" | "css_found", data: unknown) {
-    this.ws.send(JSON.stringify({ type, data }));
+    if (this.ws.readyState === WebSocket.OPEN) {
+      this.ws.send(JSON.stringify({ type, data }));
+    }
   }
 
   private isValidUrl(url: string): boolean {
@@ -35,6 +37,17 @@ export class CrawlerService {
       const parsedUrl = new URL(url, this.baseUrl);
       // Skip common non-HTML resource extensions
       if (parsedUrl.pathname.match(/\.(jpg|jpeg|png|gif|css|js|ico|svg|woff|woff2|ttf|eot|pdf|zip|rar|exe|mp[34]|avi|mkv)$/i)) {
+        return false;
+      }
+      // Skip URLs with certain patterns
+      if (parsedUrl.pathname.includes('/wp-') || 
+          parsedUrl.pathname.includes('/feed/') ||
+          parsedUrl.pathname.includes('/tag/') ||
+          parsedUrl.pathname.includes('/category/') ||
+          parsedUrl.pathname.includes('/author/') ||
+          parsedUrl.pathname.includes('/page/') ||
+          parsedUrl.pathname.includes('/comment-') ||
+          parsedUrl.pathname.includes('/trackback/')) {
         return false;
       }
       return parsedUrl.hostname === this.domain;
@@ -45,15 +58,22 @@ export class CrawlerService {
 
   private normalizeUrl(url: string): string {
     try {
-      // Handle relative URLs by using the base URL
       const parsedUrl = new URL(url, this.baseUrl);
       parsedUrl.hash = ""; // Remove fragments
       parsedUrl.search = ""; // Remove query parameters for deduplication
+      
+      // Remove common tracking parameters
+      const searchParams = parsedUrl.searchParams;
+      const trackingParams = ['utm_source', 'utm_medium', 'utm_campaign', 'fbclid', 'gclid', '_ga'];
+      trackingParams.forEach(param => searchParams.delete(param));
+      
       // Ensure trailing slash consistency
       if (!parsedUrl.pathname.includes(".")) {
         parsedUrl.pathname = parsedUrl.pathname.replace(/\/?$/, "/");
       }
-      return parsedUrl.href;
+      
+      // Convert to lowercase for case-insensitive comparison
+      return parsedUrl.href.toLowerCase();
     } catch {
       return "";
     }
@@ -147,9 +167,10 @@ export class CrawlerService {
       this.domain = parsedUrl.hostname;
       
       // Reset state for new crawl
-      this.queue = [url];
-      this.visitedUrls = new Set([url]);
-      this.processing = new Set();
+      const normalizedUrl = this.normalizeUrl(url);
+      this.queue = [normalizedUrl];
+      this.visitedUrls = new Set();
+      this.processing = new Set([normalizedUrl]);
       this.activeRequests = 0;
       this.resourceManager = new ResourceManager(url);
 
@@ -162,7 +183,16 @@ export class CrawlerService {
   }
 
   private async processUrl(url: string) {
+    if (this.visitedUrls.has(url)) {
+      console.log(`Skipping already visited URL: ${url}`);
+      this.processing.delete(url);
+      this.activeRequests--;
+      return;
+    }
+
     this.activeRequests++;
+    this.visitedUrls.add(url);
+
     if (!this.resourceManager) {
       this.resourceManager = new ResourceManager(url);
     }
@@ -176,6 +206,7 @@ export class CrawlerService {
       }
 
       console.log('🔍 Processing:', url);
+      this.sendUpdate("link", url);
 
       const fetchOptions = {
         headers: {
@@ -194,16 +225,25 @@ export class CrawlerService {
         throw new Error(`HTTP error! status: ${response.status}`);
       }
 
+      const contentType = response.headers.get('content-type');
+      if (!contentType || !contentType.includes('text/html')) {
+        console.log(`Skipping non-HTML content: ${url} (${contentType})`);
+        return;
+      }
+
       const html = await response.text();
       
       // Extract and add new links to queue
       const links = await this.extractLinks(html, url);
       for (const link of links) {
         const normalizedLink = this.normalizeUrl(link);
-        if (normalizedLink && this.isValidUrl(normalizedLink) && !this.visitedUrls.has(normalizedLink)) {
+        if (normalizedLink && 
+            this.isValidUrl(normalizedLink) && 
+            !this.visitedUrls.has(normalizedLink) && 
+            !this.processing.has(normalizedLink)) {
           console.log('Found new link:', normalizedLink);
           this.queue.push(normalizedLink);
-          this.visitedUrls.add(normalizedLink);
+          this.processing.add(normalizedLink);
         }
       }
 
@@ -213,6 +253,7 @@ export class CrawlerService {
       console.error('Error processing content:', error);
       this.sendUpdate("error", `Error processing ${url}: ${error.message}`);
     } finally {
+      this.processing.delete(url);
       this.activeRequests--;
       // Continue processing queue
       await this.processQueue();
@@ -227,7 +268,7 @@ export class CrawlerService {
     // Use regex to extract links (more reliable than HTMLRewriter in this case)
     while ((match = linkPattern.exec(html)) !== null) {
       const href = match[1];
-      if (href) {
+      if (href && !href.startsWith('#') && !href.startsWith('javascript:')) {
         try {
           // Resolve relative URLs against the base URL
           const absoluteUrl = new URL(href, baseUrl).href;
@@ -239,16 +280,18 @@ export class CrawlerService {
       }
     }
 
-    return links;
+    return [...new Set(links)]; // Remove duplicates
   }
 
   private async processQueue() {
+    console.log(`Queue status - Size: ${this.queue.length}, Active: ${this.activeRequests}, Visited: ${this.visitedUrls.size}, Processing: ${this.processing.size}`);
+    
     const promises: Promise<void>[] = [];
     
     while (this.queue.length > 0 && this.activeRequests < this.maxConcurrent) {
       const url = this.queue.shift();
-      if (url) {
-        console.log(`Starting to process URL: ${url}. Queue size: ${this.queue.length}`);
+      if (url && !this.visitedUrls.has(url)) {
+        console.log(`Starting to process URL: ${url}`);
         promises.push(this.processUrl(url));
       }
     }
@@ -278,96 +321,11 @@ export class CrawlerService {
       }
 
       const html = await response.text();
-      const processedResources = new Map<string, Uint8Array>();
-      
-      // Initialize ResourceManager if needed
-      if (!this.resourceManager) {
-        const parsedUrl = new URL(url);
-        this.resourceManager = new ResourceManager(parsedUrl.hostname);
-      }
+      await this.processHtml(html, url);
 
-      // Generate resource manifest
-      const manifest = await this.resourceManager.generateManifest(html, url);
-      console.log('Generated manifest for URL:', url, 'Resources:', {
-        styles: manifest.styles.size,
-        fonts: manifest.fonts.size
-      });
-      
-      // Process resources
-      const processResource = async (resourceUrl: string) => {
-        try {
-          const data = await this.resourceManager.fetchAndCache(resourceUrl);
-          if (data) {
-            processedResources.set(resourceUrl, data);
-          }
-        } catch (error) {
-          console.error(`Error fetching resource ${resourceUrl}:`, error);
-        }
-      };
-
-      // Process all resources concurrently
-      const promises = [];
-      for (const styleUrl of manifest.styles) {
-        promises.push(processResource(styleUrl));
-      }
-      for (const fontUrl of manifest.fonts) {
-        promises.push(processResource(fontUrl));
-      }
-      await Promise.all(promises);
-
-      console.log('Processed resources for URL:', url, 'Count:', processedResources.size);
-
-      // Send processed content
-      this.sendUpdate("processed_content", {
-        url,
-        html,
-        resources: Object.fromEntries(
-          Array.from(processedResources.entries()).map(([url, data]) => [
-            url,
-            Array.from(data)
-          ])
-        )
-      });
-
-      console.log('Sent processed content for URL:', url);
     } catch (error) {
       console.error('Error processing content:', error);
-      this.sendUpdate("error", `Error processing ${url}: ${error.message}`);
-    }
-  }
-}
-
-export class ResourceManager {
-  private allowedDomains: Set<string>;
-
-  constructor(url: string) {
-    try {
-      const domain = new URL(url).hostname;
-      console.log('Initializing ResourceManager with domain:', domain);
-      this.allowedDomains = new Set([
-        domain,
-        'cdn.jsdelivr.net',
-        'cdnjs.cloudflare.com',
-        'fonts.googleapis.com',
-        'stackpath.bootstrapcdn.com',
-        'unpkg.com'
-      ]);
-      console.log('Allowed domains:', Array.from(this.allowedDomains).join(', '));
-    } catch (error) {
-      console.error('Error initializing ResourceManager:', error);
-      throw new Error(`Invalid URL: ${error.message}`);
-    }
-  }
-
-  isAllowedDomain(url: string): boolean {
-    try {
-      const urlDomain = new URL(url).hostname;
-      const isAllowed = this.allowedDomains.has(urlDomain);
-      console.log(`Domain check for ${urlDomain}: ${isAllowed ? 'allowed' : 'blocked'}`);
-      return isAllowed;
-    } catch (error) {
-      console.error('Error checking domain:', error);
-      return false;
+      this.sendUpdate("error", `Error processing content for ${url}: ${error.message}`);
     }
   }
 }
