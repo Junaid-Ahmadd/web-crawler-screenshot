@@ -8,12 +8,13 @@
   let crawlerWs: WebSocket | null = null;
   let isProcessing = false;
   let reconnectAttempts = 0;
+  let connectionId: string | null = null;
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_DELAY = 5000;
 
   function addLog(message: string) {
     logs = [...logs, `[${new Date().toLocaleTimeString()}] ${message}`];
-    console.log(message); // Also log to console for debugging
+    console.log(message);
   }
 
   function initWebSocket() {
@@ -36,8 +37,8 @@
 
       crawlerWs.onopen = () => {
         console.log('WebSocket connection established');
-        addLog('Connected to server');
-        reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+        addLog('Connecting to server...');
+        reconnectAttempts = 0;
       };
 
       crawlerWs.onmessage = async (event) => {
@@ -45,18 +46,26 @@
           const data = JSON.parse(event.data);
           console.log('Received WebSocket message:', data);
           
-          if (data.type === "ping") {
-            crawlerWs?.send(JSON.stringify({ type: "pong" }));
-            return;
-          }
-          
           switch (data.type) {
+            case 'connection_status':
+              if (data.status === 'connected') {
+                connectionId = data.connectionId;
+                addLog('Connected to server');
+              }
+              break;
+            case 'ping':
+              crawlerWs?.send(JSON.stringify({ 
+                type: "pong",
+                timestamp: data.timestamp
+              }));
+              break;
             case 'link':
               crawledLinks = [...crawledLinks, data.data];
               addLog(`Found link: ${data.data}`);
               break;
             case 'error':
               addLog(`Error: ${data.data}`);
+              isProcessing = false;
               break;
             case 'info':
               addLog(data.data);
@@ -74,7 +83,8 @@
 
       crawlerWs.onclose = (event) => {
         console.log('WebSocket connection closed', event);
-        addLog('Connection closed');
+        connectionId = null;
+        addLog(`Connection closed${event.reason ? `: ${event.reason}` : ''}`);
         
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
           addLog(`Reconnecting in ${RECONNECT_DELAY/1000} seconds...`);
@@ -153,8 +163,14 @@
       placeholder="Enter website URL"
       disabled={isProcessing}
     />
-    <button on:click={startCrawl} disabled={isProcessing}>
-      {isProcessing ? 'Processing...' : 'Start Crawling'}
+    <button on:click={startCrawl} disabled={isProcessing || !connectionId}>
+      {#if !connectionId}
+        Connecting...
+      {:else if isProcessing}
+        Processing...
+      {:else}
+        Start Crawling
+      {/if}
     </button>
   </div>
 
@@ -214,6 +230,7 @@
     border: none;
     border-radius: 4px;
     cursor: pointer;
+    min-width: 120px;
   }
 
   button:disabled {
