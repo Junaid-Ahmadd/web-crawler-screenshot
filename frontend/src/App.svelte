@@ -9,7 +9,6 @@
   let isProcessing = false;
   let reconnectAttempts = 0;
   let connectionId: string | null = null;
-  let selectedScreenshot: string | null = null;
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_DELAY = 5000;
 
@@ -86,12 +85,6 @@
               crawledLinks = [...crawledLinks, data.data];
               addLog(`Found link: ${data.data}`);
               break;
-            case 'screenshot':
-              const imageUrl = URL.createObjectURL(new Blob([new Uint8Array(data.data.image)], { type: 'image/jpeg' }));
-              screenshots.set(data.data.url, imageUrl);
-              screenshots = screenshots; // trigger reactivity
-              addLog(`Screenshot captured: ${data.data.url}`);
-              break;
             case 'error':
               addLog(`Error: ${data.data}`);
               isProcessing = false;
@@ -111,14 +104,20 @@
       };
 
       crawlerWs.onclose = (event) => {
-        console.log('WebSocket connection closed:', event);
-        addLog(`Connection closed (${event.code}): ${event.reason || 'No reason provided'}`);
+        console.log('WebSocket connection closed', event);
+        connectionId = null;
+        clearTimeout(connectionTimeout);
+        
+        const reason = event.reason || 'Unknown reason';
+        addLog(`Connection closed: ${reason}`);
         
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), RECONNECT_DELAY);
+          addLog(`Reconnecting in ${delay/1000} seconds...`);
           setTimeout(() => {
             reconnectAttempts++;
             initWebSocket();
-          }, RECONNECT_DELAY);
+          }, delay);
         } else {
           addLog('Max reconnection attempts reached. Please refresh the page.');
         }
@@ -127,11 +126,11 @@
       crawlerWs.onerror = (error) => {
         console.error('WebSocket error:', error);
         addLog('Connection error occurred');
+        // Don't close here, let the onclose handler deal with reconnection
       };
-
     } catch (error) {
       console.error('Error initializing WebSocket:', error);
-      addLog(`Error initializing WebSocket: ${error.message}`);
+      addLog(`Connection error: ${error.message}`);
     }
   }
 
@@ -141,39 +140,36 @@
       return;
     }
 
-    if (!url.startsWith('http://') && !url.startsWith('https://')) {
-      url = 'https://' + url;
-    }
-
     try {
-      new URL(url); // validate URL
+      // Validate URL
+      new URL(url);
+
+      if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
+        addLog('Reconnecting to server...');
+        initWebSocket();
+        // Wait for connection to establish
+        setTimeout(() => startCrawl(), 1000);
+        return;
+      }
+
+      isProcessing = true;
+      crawledLinks = [];
+      screenshots = new Map();
+      logs = [];
+      addLog(`Starting crawl for: ${url}`);
+      
+      crawlerWs.send(JSON.stringify({
+        type: 'start_crawl',
+        url
+      }));
     } catch (error) {
-      addLog('Invalid URL format');
-      return;
+      console.error('Error starting crawl:', error);
+      addLog(`Error starting crawl: ${error.message}`);
+      isProcessing = false;
     }
-
-    if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
-      addLog('Not connected to server');
-      return;
-    }
-
-    isProcessing = true;
-    crawledLinks = [];
-    screenshots = new Map();
-    logs = [];
-    selectedScreenshot = null;
-    addLog(`Starting crawl for: ${url}`);
-
-    crawlerWs.send(JSON.stringify({
-      type: 'start_crawl',
-      url
-    }));
   }
 
-  function viewScreenshot(url: string) {
-    selectedScreenshot = screenshots.get(url) || null;
-  }
-
+  // Initialize WebSocket connection when component mounts
   onMount(() => {
     initWebSocket();
     return () => {
@@ -187,53 +183,41 @@
 <main class="container">
   <h1>Web Crawler & Screenshot Tool</h1>
   
-  <div class="input-section">
+  <div class="input-container">
     <input
       type="text"
       bind:value={url}
-      placeholder="Enter URL to crawl (e.g., https://example.com)"
+      placeholder="Enter website URL"
       disabled={isProcessing}
     />
-    <button on:click={startCrawl} disabled={isProcessing}>
-      {isProcessing ? 'Crawling...' : 'Start Crawl'}
+    <button on:click={startCrawl} disabled={isProcessing || !connectionId}>
+      {#if !connectionId}
+        Connecting...
+      {:else if isProcessing}
+        Processing...
+      {:else}
+        Start Crawling
+      {/if}
     </button>
   </div>
 
-  <div class="content">
-    <div class="links-section">
+  <div class="results-container">
+    {#if crawledLinks.length > 0}
       <h2>Crawled Links ({crawledLinks.length})</h2>
-      <div class="links-list">
+      <ul>
         {#each crawledLinks as link}
-          <div class="link-item">
-            <span class="link-text">{link}</span>
-            {#if screenshots.has(link)}
-              <button class="view-screenshot" on:click={() => viewScreenshot(link)}>
-                View Screenshot
-              </button>
-            {/if}
-          </div>
+          <li>{link}</li>
         {/each}
-      </div>
-    </div>
+      </ul>
+    {/if}
 
-    <div class="screenshot-section">
-      <h2>Screenshot Preview</h2>
-      {#if selectedScreenshot}
-        <img src={selectedScreenshot} alt="Page screenshot" />
-      {:else}
-        <div class="no-screenshot">
-          No screenshot selected
-        </div>
-      {/if}
-    </div>
-
-    <div class="logs-section">
+    <div class="logs">
       <h2>Logs</h2>
-      <div class="logs-list">
+      <pre>
         {#each logs as log}
-          <div class="log-item">{log}</div>
+          {log}
         {/each}
-      </div>
+      </pre>
     </div>
   </div>
 </main>
@@ -242,37 +226,38 @@
   .container {
     max-width: 1200px;
     margin: 0 auto;
-    padding: 20px;
+    padding: 2rem;
   }
 
   h1 {
     text-align: center;
     color: #333;
-    margin-bottom: 30px;
+    margin-bottom: 2rem;
   }
 
-  .input-section {
+  .input-container {
     display: flex;
-    gap: 10px;
-    margin-bottom: 30px;
+    gap: 1rem;
+    margin-bottom: 2rem;
   }
 
   input {
     flex: 1;
-    padding: 10px;
-    font-size: 16px;
-    border: 1px solid #ddd;
+    padding: 0.5rem;
+    font-size: 1rem;
+    border: 1px solid #ccc;
     border-radius: 4px;
   }
 
   button {
-    padding: 10px 20px;
-    font-size: 16px;
+    padding: 0.5rem 1rem;
+    font-size: 1rem;
     background-color: #007bff;
     color: white;
     border: none;
     border-radius: 4px;
     cursor: pointer;
+    min-width: 120px;
   }
 
   button:disabled {
@@ -280,83 +265,30 @@
     cursor: not-allowed;
   }
 
-  .content {
-    display: grid;
-    grid-template-columns: 1fr 1fr;
-    gap: 20px;
+  .results-container {
+    margin-top: 2rem;
   }
 
-  .links-section {
-    grid-column: 1;
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+  ul {
+    list-style: none;
+    padding: 0;
   }
 
-  .screenshot-section {
-    grid-column: 2;
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  }
-
-  .logs-section {
-    grid-column: 1 / -1;
-    background: white;
-    padding: 20px;
-    border-radius: 8px;
-    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
-  }
-
-  .links-list, .logs-list {
-    max-height: 400px;
-    overflow-y: auto;
-  }
-
-  .link-item {
-    display: flex;
-    justify-content: space-between;
-    align-items: center;
-    padding: 10px;
+  li {
+    padding: 0.5rem;
     border-bottom: 1px solid #eee;
   }
 
-  .link-text {
-    flex: 1;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    margin-right: 10px;
-  }
-
-  .view-screenshot {
-    background-color: #28a745;
-    padding: 5px 10px;
-    font-size: 14px;
-  }
-
-  .log-item {
-    padding: 5px;
-    border-bottom: 1px solid #eee;
-    font-family: monospace;
-  }
-
-  .no-screenshot {
-    display: flex;
-    justify-content: center;
-    align-items: center;
-    height: 400px;
-    background: #f8f9fa;
-    color: #6c757d;
-    font-size: 18px;
-  }
-
-  img {
-    max-width: 100%;
-    height: auto;
-    border: 1px solid #ddd;
+  .logs {
+    margin-top: 2rem;
+    background-color: #f8f9fa;
+    padding: 1rem;
     border-radius: 4px;
+  }
+
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
+    font-family: monospace;
   }
 </style>

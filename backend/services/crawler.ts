@@ -1,6 +1,6 @@
 import { HTMLRewriter } from "https://deno.land/x/html_rewriter@v0.1.0-pre.17/index.ts";
+import { chromium } from "playwright";
 import { ResourceManager } from "./resource_manager.ts";
-import { chromium } from "https://deno.land/x/puppeteer@16.2.0/mod.ts";
 
 export class CrawlerService {
   private visitedUrls = new Set<string>();
@@ -22,9 +22,22 @@ export class CrawlerService {
     'stackpath.bootstrapcdn.com',
     'unpkg.com'
   ];
+  private browser: any;
 
   constructor(ws: WebSocket) {
     this.ws = ws;
+    this.initialize();
+  }
+
+  private async initialize() {
+    try {
+      this.browser = await chromium.launch({
+        args: ['--no-sandbox', '--disable-setuid-sandbox']
+      });
+    } catch (error) {
+      console.error('Failed to initialize browser:', error);
+      this.sendUpdate("error", `Failed to initialize browser: ${error.message}`);
+    }
   }
 
   private sendUpdate(type: "link" | "error" | "info" | "manifest" | "processed_content" | "crawling_complete" | "css_analysis" | "css_manifest" | "css_found" | "screenshot", data: unknown) {
@@ -161,6 +174,33 @@ export class CrawlerService {
     }
   }
 
+  private async takeScreenshot(url: string) {
+    try {
+      const context = await this.browser.newContext();
+      const page = await context.newPage();
+      
+      await page.setViewport({ width: 1280, height: 800 });
+      await page.goto(url, { waitUntil: 'networkidle' });
+      
+      const screenshot = await page.screenshot({
+        type: 'jpeg',
+        quality: 80,
+        fullPage: true
+      });
+
+      this.sendUpdate("screenshot", {
+        url,
+        image: Array.from(new Uint8Array(screenshot)),
+        timestamp: Date.now()
+      });
+
+      await context.close();
+    } catch (error) {
+      console.error('Screenshot error:', error);
+      this.sendUpdate("error", `Failed to take screenshot of ${url}: ${error.message}`);
+    }
+  }
+
   public async crawl(url: string) {
     try {
       const parsedUrl = new URL(url);
@@ -209,38 +249,8 @@ export class CrawlerService {
       console.log('🔍 Processing:', url);
       this.sendUpdate("link", url);
 
-      // Take screenshot using Puppeteer
-      try {
-        const browser = await chromium.launch({
-          args: ['--no-sandbox', '--disable-setuid-sandbox'],
-          headless: true
-        });
-        
-        const page = await browser.newPage();
-        await page.setViewport({ width: 1280, height: 800 });
-        
-        console.log('Taking screenshot of:', url);
-        await page.goto(url, { waitUntil: 'networkidle0' });
-        
-        // Take screenshot
-        const screenshot = await page.screenshot({
-          type: 'jpeg',
-          quality: 80,
-          fullPage: true
-        });
-        
-        // Send screenshot to client
-        this.sendUpdate("screenshot", {
-          url,
-          image: Array.from(screenshot),
-          timestamp: Date.now()
-        });
-        
-        await browser.close();
-      } catch (error) {
-        console.error('Screenshot error:', error);
-        this.sendUpdate("error", `Failed to take screenshot of ${url}: ${error.message}`);
-      }
+      // Take screenshot
+      await this.takeScreenshot(url);
 
       const fetchOptions = {
         headers: {
