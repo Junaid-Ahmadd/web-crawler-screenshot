@@ -13,50 +13,62 @@ const HEARTBEAT_INTERVAL = 15000;
 const PONG_TIMEOUT = 5000;
 
 router.get("/ws", async (ctx) => {
-  if (!ctx.isUpgradable) {
-    ctx.throw(400, "Connection is not upgradable to WebSocket");
-    return;
-  }
-
   try {
+    if (!ctx.isUpgradable) {
+      ctx.throw(400, "Connection is not upgradable to WebSocket");
+      return;
+    }
+
     const ws = await ctx.upgrade();
     const connectionId = crypto.randomUUID();
-    connections.set(connectionId, ws);
 
-    console.log(`WebSocket connection established (ID: ${connectionId})`);
-    
-    // Send initial connection success message
-    ws.send(JSON.stringify({ 
-      type: "connection_status", 
-      status: "connected",
-      connectionId 
-    }));
+    // Wait for the connection to be established
+    await new Promise<void>((resolve) => {
+      ws.onopen = () => {
+        connections.set(connectionId, ws);
+        console.log(`WebSocket connection established (ID: ${connectionId})`);
+        
+        // Send initial connection success message
+        if (ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ 
+            type: "connection_status", 
+            status: "connected",
+            connectionId 
+          }));
+        }
+        resolve();
+      };
+    });
 
     let pongReceived = true;
     let pongTimeoutId: number | undefined;
+    let heartbeatInterval: number | undefined;
 
     // Set up heartbeat interval
-    const heartbeatInterval = setInterval(() => {
-      if (ws.readyState === WebSocket.OPEN) {
-        if (!pongReceived) {
-          // No pong received from last ping, close connection
-          console.log(`No pong received for connection ${connectionId}, closing...`);
-          ws.close(1000, "Heartbeat timeout");
-          return;
-        }
-
-        pongReceived = false;
-        ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
-
-        // Set timeout for pong response
-        pongTimeoutId = setTimeout(() => {
+    const startHeartbeat = () => {
+      heartbeatInterval = setInterval(() => {
+        if (ws.readyState === WebSocket.OPEN) {
           if (!pongReceived) {
-            console.log(`Pong timeout for connection ${connectionId}`);
-            ws.close(1000, "Pong timeout");
+            console.log(`No pong received for connection ${connectionId}, closing...`);
+            ws.close(1000, "Heartbeat timeout");
+            return;
           }
-        }, PONG_TIMEOUT);
-      }
-    }, HEARTBEAT_INTERVAL);
+
+          pongReceived = false;
+          ws.send(JSON.stringify({ type: "ping", timestamp: Date.now() }));
+
+          // Set timeout for pong response
+          pongTimeoutId = setTimeout(() => {
+            if (!pongReceived) {
+              console.log(`Pong timeout for connection ${connectionId}`);
+              ws.close(1000, "Pong timeout");
+            }
+          }, PONG_TIMEOUT);
+        }
+      }, HEARTBEAT_INTERVAL);
+    };
+
+    startHeartbeat();
 
     const crawlerService = new CrawlerService(ws);
 
@@ -104,7 +116,9 @@ router.get("/ws", async (ctx) => {
         reason: event.reason
       });
       connections.delete(connectionId);
-      clearInterval(heartbeatInterval);
+      if (heartbeatInterval) {
+        clearInterval(heartbeatInterval);
+      }
       if (pongTimeoutId) {
         clearTimeout(pongTimeoutId);
       }
@@ -121,6 +135,7 @@ router.get("/ws", async (ctx) => {
         }));
       }
     };
+
   } catch (error) {
     console.error("WebSocket upgrade error:", error);
     ctx.throw(500, "Failed to establish WebSocket connection");

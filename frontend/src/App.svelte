@@ -29,16 +29,35 @@
     addLog(`Connecting to WebSocket: ${wsUrl}`);
     
     try {
-      if (crawlerWs && crawlerWs.readyState === WebSocket.OPEN) {
-        crawlerWs.close();
+      if (crawlerWs) {
+        if (crawlerWs.readyState === WebSocket.OPEN || crawlerWs.readyState === WebSocket.CONNECTING) {
+          crawlerWs.close();
+        }
+        crawlerWs = null;
       }
 
       crawlerWs = new WebSocket(wsUrl);
 
+      // Set a connection timeout
+      const connectionTimeout = setTimeout(() => {
+        if (crawlerWs && crawlerWs.readyState === WebSocket.CONNECTING) {
+          addLog('Connection timeout, retrying...');
+          crawlerWs.close();
+          if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+            setTimeout(() => {
+              reconnectAttempts++;
+              initWebSocket();
+            }, RECONNECT_DELAY);
+          } else {
+            addLog('Max reconnection attempts reached. Please refresh the page.');
+          }
+        }
+      }, 10000); // 10 second timeout
+
       crawlerWs.onopen = () => {
-        console.log('WebSocket connection established');
+        console.log('WebSocket connection opened');
         addLog('Connecting to server...');
-        reconnectAttempts = 0;
+        clearTimeout(connectionTimeout);
       };
 
       crawlerWs.onmessage = async (event) => {
@@ -51,13 +70,16 @@
               if (data.status === 'connected') {
                 connectionId = data.connectionId;
                 addLog('Connected to server');
+                reconnectAttempts = 0;
               }
               break;
             case 'ping':
-              crawlerWs?.send(JSON.stringify({ 
-                type: "pong",
-                timestamp: data.timestamp
-              }));
+              if (crawlerWs?.readyState === WebSocket.OPEN) {
+                crawlerWs.send(JSON.stringify({ 
+                  type: "pong",
+                  timestamp: data.timestamp
+                }));
+              }
               break;
             case 'link':
               crawledLinks = [...crawledLinks, data.data];
@@ -84,14 +106,18 @@
       crawlerWs.onclose = (event) => {
         console.log('WebSocket connection closed', event);
         connectionId = null;
-        addLog(`Connection closed${event.reason ? `: ${event.reason}` : ''}`);
+        clearTimeout(connectionTimeout);
+        
+        const reason = event.reason || 'Unknown reason';
+        addLog(`Connection closed: ${reason}`);
         
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
-          addLog(`Reconnecting in ${RECONNECT_DELAY/1000} seconds...`);
+          const delay = Math.min(1000 * Math.pow(2, reconnectAttempts), RECONNECT_DELAY);
+          addLog(`Reconnecting in ${delay/1000} seconds...`);
           setTimeout(() => {
             reconnectAttempts++;
             initWebSocket();
-          }, RECONNECT_DELAY);
+          }, delay);
         } else {
           addLog('Max reconnection attempts reached. Please refresh the page.');
         }
@@ -100,6 +126,7 @@
       crawlerWs.onerror = (error) => {
         console.error('WebSocket error:', error);
         addLog('Connection error occurred');
+        // Don't close here, let the onclose handler deal with reconnection
       };
     } catch (error) {
       console.error('Error initializing WebSocket:', error);
