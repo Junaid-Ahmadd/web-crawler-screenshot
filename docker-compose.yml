@@ -15,14 +15,37 @@ services:
     build: .
     ports:
       - "3000:3000"
+    environment:
+      - NODE_ENV=production
+      - PORT=3000
+      - BACKEND_URL=ws://backend:8000
     depends_on:
       - backend
-    networks:
-      - app-network
     restart: unless-stopped
     cap_add:
-      - SYS_ADMIN
-    shm_size: '1gb'
+      - SYS_ADMIN  # Required for Playwright
+    security_opt:
+      - seccomp=unconfined  # Required for Chrome/Playwright
+    shm_size: '1gb'  # Shared memory for browser
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:3000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+    deploy:
+      resources:
+        limits:
+          memory: 1.5GB  # Set memory limit
+        reservations:
+          memory: 512M  # Minimum memory reservation
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "50m"  # Maximum log file size
+        max-file: "3"    # Number of log files to keep
+    networks:
+      - app-network
 
 networks:
   app-network:

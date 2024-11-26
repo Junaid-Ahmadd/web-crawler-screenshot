@@ -5,22 +5,33 @@
   let logs: string[] = [];
   let crawlerWs: WebSocket;
   let isProcessing = false;
+  let resourceManifests: Map<string, {
+    scripts: string[];
+    styles: string[];
+    images: string[];
+    fonts: string[];
+  }> = new Map();
 
   function addLog(message: string) {
     logs = [...logs, `[${new Date().toLocaleTimeString()}] ${message}`];
   }
 
   function initWebSocket() {
-    crawlerWs = new WebSocket('ws://localhost:8000/ws');
+    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000/ws';
+    console.log('WebSocket URL:', wsUrl);
+    console.log('Environment variable:', import.meta.env.VITE_BACKEND_WS_URL);
+    crawlerWs = new WebSocket(wsUrl);
 
     crawlerWs.onmessage = async (event) => {
       const data = JSON.parse(event.data);
+      console.log('Received WebSocket message:', data);
       
       switch (data.type) {
         case 'link':
           crawledLinks = [...crawledLinks, data.data];
           // Request screenshot for the new link
           try {
+            console.log('Requesting screenshot for URL:', data.data);
             const response = await fetch('/api/screenshot', {
               method: 'POST',
               headers: {
@@ -30,16 +41,29 @@
             });
             
             if (response.ok) {
-              const blob = await response.blob();
-              const imageUrl = URL.createObjectURL(blob);
-              screenshots.set(data.data, imageUrl);
-              screenshots = screenshots; // Trigger reactivity
-              addLog(`Screenshot taken: ${data.data}`);
+              const contentType = response.headers.get('content-type');
+              if (contentType && contentType.includes('image/')) {
+                const blob = await response.blob();
+                const imageUrl = URL.createObjectURL(blob);
+                screenshots.set(data.data, imageUrl);
+                screenshots = screenshots; // Trigger reactivity
+                addLog(`Screenshot taken: ${data.data}`);
+              } else {
+                const text = await response.text();
+                addLog(`Screenshot error: Invalid response type - ${contentType}`);
+                console.error('Invalid response:', text);
+              }
             } else {
-              const error = await response.json();
-              addLog(`Screenshot error: ${error.error}`);
+              const text = await response.text();
+              try {
+                const error = JSON.parse(text);
+                addLog(`Screenshot error: ${error.error || text}`);
+              } catch {
+                addLog(`Screenshot error: ${text}`);
+              }
             }
           } catch (error) {
+            console.error('Screenshot request error:', error);
             addLog(`Screenshot error: ${error.message}`);
           }
           break;
@@ -70,6 +94,7 @@
       crawledLinks = [];
       screenshots = new Map();
       logs = [];
+      resourceManifests = new Map();
       
       if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
         initWebSocket();

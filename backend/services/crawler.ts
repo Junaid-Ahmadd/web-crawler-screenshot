@@ -1,4 +1,4 @@
-import { HTMLRewriter } from "../dependencies.ts";
+import { HTMLRewriter } from "https://deno.land/x/html_rewriter@v0.1.0-pre.17/index.ts";
 import { ResourceManager } from "./resource_manager.ts";
 
 export class CrawlerService {

@@ -12,5 +12,6 @@ export default defineConfig({
     rollupOptions: {
       input: resolve(__dirname, 'index.html')
     }
-  }
+  },
+  envPrefix: 'VITE_'
 })

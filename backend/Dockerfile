@@ -16,4 +16,5 @@ RUN deno cache server.ts
 
 EXPOSE 8000
 
-CMD ["run", "--allow-net", "--allow-read", "server.ts"]
+# Add --allow-env flag for environment variable access
+CMD ["run", "--allow-net", "--allow-read", "--allow-env", "server.ts"]

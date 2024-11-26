@@ -1,4 +1,4 @@
-import { Application, Router } from "./dependencies.ts";
+import { Application, Router } from "https://deno.land/x/oak@v12.6.1/mod.ts";
 import { CrawlerService } from "./services/crawler.ts";
 
 const app = new Application();
@@ -23,7 +23,9 @@ router.get("/ws", async (ctx) => {
     try {
       const data = JSON.parse(event.data);
       if (data.type === "start_crawl") {
-        await crawlerService.startCrawling(data.url);
+        await crawlerService.crawl(data.url);
+      } else if (data.type === "request_content") {
+        await crawlerService.processAndSendContent(data.url);
       }
     } catch (error) {
       ws.send(JSON.stringify({ type: "error", data: error.message }));
@@ -40,6 +42,7 @@ app.use(async (ctx, next) => {
   ctx.response.headers.set("Access-Control-Allow-Origin", "*");
   ctx.response.headers.set("Access-Control-Allow-Methods", "GET, POST, OPTIONS");
   ctx.response.headers.set("Access-Control-Allow-Headers", "Content-Type");
+  ctx.response.headers.set("Access-Control-Allow-Credentials", "true");
   
   if (ctx.request.method === "OPTIONS") {
     ctx.response.status = 204;
@@ -52,7 +55,7 @@ app.use(async (ctx, next) => {
 app.use(router.routes());
 app.use(router.allowedMethods());
 
-const port = 8000;
-console.log(`Server running on http://localhost:${port}`);
+const port = parseInt(Deno.env.get("PORT") || "8000");
+console.log(`Backend server running on port ${port}`);
 
 await app.listen({ port });
