@@ -11,108 +11,159 @@
     images: string[];
     fonts: string[];
   }> = new Map();
+  let reconnectAttempts = 0;
+  const MAX_RECONNECT_ATTEMPTS = 5;
+  const RECONNECT_DELAY = 5000;
 
   function addLog(message: string) {
     logs = [...logs, `[${new Date().toLocaleTimeString()}] ${message}`];
   }
 
   function initWebSocket() {
-    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:8000/ws';
-    console.log('WebSocket URL:', wsUrl);
-    console.log('Environment variable:', import.meta.env.VITE_BACKEND_WS_URL);
-    crawlerWs = new WebSocket(wsUrl);
+    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:10000/ws';
+    console.log('Connecting to WebSocket:', wsUrl);
+    
+    try {
+      crawlerWs = new WebSocket(wsUrl);
 
-    crawlerWs.onmessage = async (event) => {
-      const data = JSON.parse(event.data);
-      console.log('Received WebSocket message:', data);
-      
-      switch (data.type) {
-        case 'link':
-          crawledLinks = [...crawledLinks, data.data];
-          // Request screenshot for the new link
-          try {
-            console.log('Requesting screenshot for URL:', data.data);
-            const response = await fetch('/api/screenshot', {
-              method: 'POST',
-              headers: {
-                'Content-Type': 'application/json',
-              },
-              body: JSON.stringify({ url: data.data })
-            });
-            
-            if (response.ok) {
-              const contentType = response.headers.get('content-type');
-              if (contentType && contentType.includes('image/')) {
-                const blob = await response.blob();
-                const imageUrl = URL.createObjectURL(blob);
-                screenshots.set(data.data, imageUrl);
-                screenshots = screenshots; // Trigger reactivity
-                addLog(`Screenshot taken: ${data.data}`);
+      crawlerWs.onopen = () => {
+        console.log('WebSocket connection established');
+        addLog('Connected to server');
+        reconnectAttempts = 0; // Reset reconnect attempts on successful connection
+      };
+
+      crawlerWs.onmessage = async (event) => {
+        const data = JSON.parse(event.data);
+        console.log('Received WebSocket message:', data);
+        
+        if (data.type === "ping") {
+          crawlerWs.send(JSON.stringify({ type: "pong" }));
+          return;
+        }
+        
+        switch (data.type) {
+          case 'link':
+            crawledLinks = [...crawledLinks, data.data];
+            // Request screenshot for the new link
+            try {
+              console.log('Requesting screenshot for URL:', data.data);
+              const response = await fetch('/api/screenshot', {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({ url: data.data })
+              });
+              
+              if (response.ok) {
+                const contentType = response.headers.get('content-type');
+                if (contentType && contentType.includes('image/')) {
+                  const blob = await response.blob();
+                  const imageUrl = URL.createObjectURL(blob);
+                  screenshots.set(data.data, imageUrl);
+                  screenshots = screenshots; // Trigger reactivity
+                  addLog(`Screenshot taken: ${data.data}`);
+                } else {
+                  const text = await response.text();
+                  addLog(`Screenshot error: Invalid response type - ${contentType}`);
+                  console.error('Invalid response:', text);
+                }
               } else {
                 const text = await response.text();
-                addLog(`Screenshot error: Invalid response type - ${contentType}`);
-                console.error('Invalid response:', text);
+                try {
+                  const error = JSON.parse(text);
+                  addLog(`Screenshot error: ${error.error || text}`);
+                } catch {
+                  addLog(`Screenshot error: ${text}`);
+                }
               }
-            } else {
-              const text = await response.text();
-              try {
-                const error = JSON.parse(text);
-                addLog(`Screenshot error: ${error.error || text}`);
-              } catch {
-                addLog(`Screenshot error: ${text}`);
-              }
+            } catch (error) {
+              console.error('Screenshot request error:', error);
+              addLog(`Screenshot error: ${error.message}`);
             }
-          } catch (error) {
-            console.error('Screenshot request error:', error);
-            addLog(`Screenshot error: ${error.message}`);
-          }
-          break;
-        case 'error':
-          addLog(`Error: ${data.data}`);
-          break;
-        case 'info':
-          addLog(`Info: ${data.data}`);
-          if (data.data === 'Crawling completed') {
+            break;
+          case 'error':
+            addLog(`Error: ${data.data}`);
+            break;
+          case 'info':
+            addLog(data.data);
+            break;
+          case 'crawling_complete':
             isProcessing = false;
-          }
-          break;
-      }
-    };
+            addLog('Crawling completed');
+            break;
+          case 'processed_content':
+            // Handle processed content...
+            break;
+        }
+      };
 
-    crawlerWs.onclose = () => addLog('Crawler connection closed');
+      crawlerWs.onclose = () => {
+        console.log('WebSocket connection closed');
+        addLog('Connection closed');
+        
+        if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
+          addLog(`Reconnecting in ${RECONNECT_DELAY/1000} seconds...`);
+          setTimeout(() => {
+            reconnectAttempts++;
+            initWebSocket();
+          }, RECONNECT_DELAY);
+        } else {
+          addLog('Max reconnection attempts reached. Please refresh the page.');
+        }
+      };
+
+      crawlerWs.onerror = (error) => {
+        console.error('WebSocket error:', error);
+        addLog('Connection error occurred');
+      };
+    } catch (error) {
+      console.error('Error initializing WebSocket:', error);
+      addLog(`Connection error: ${error.message}`);
+    }
   }
 
-  function startCrawling() {
+  function startCrawl() {
     if (!url) {
       addLog('Please enter a URL');
       return;
     }
 
     try {
-      new URL(url); // Validate URL
+      if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
+        addLog('Reconnecting to server...');
+        initWebSocket();
+        // Wait for connection to establish
+        setTimeout(() => startCrawl(), 1000);
+        return;
+      }
+
       isProcessing = true;
       crawledLinks = [];
       screenshots = new Map();
       logs = [];
-      resourceManifests = new Map();
+      addLog(`Starting crawl for: ${url}`);
       
-      if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
-        initWebSocket();
-      }
-
       crawlerWs.send(JSON.stringify({
         type: 'start_crawl',
         url
       }));
-      
-      addLog(`Starting crawl for: ${url}`);
     } catch (error) {
-      addLog(`Invalid URL: ${error.message}`);
+      console.error('Error starting crawl:', error);
+      addLog(`Error starting crawl: ${error.message}`);
+      isProcessing = false;
     }
   }
 
-  // Initialize WebSocket connection
-  initWebSocket();
+  // Initialize WebSocket connection when component mounts
+  onMount(() => {
+    initWebSocket();
+    return () => {
+      if (crawlerWs) {
+        crawlerWs.close();
+      }
+    };
+  });
 </script>
 
 <main class="container">
@@ -125,7 +176,7 @@
       placeholder="Enter website URL"
       disabled={isProcessing}
     />
-    <button on:click={startCrawling} disabled={isProcessing}>
+    <button on:click={startCrawl} disabled={isProcessing}>
       {isProcessing ? 'Processing...' : 'Start Crawling'}
     </button>
   </div>
