@@ -17,7 +17,8 @@
   }
 
   function initWebSocket() {
-    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL;
+    // Get WebSocket URL from environment variable or fallback to a default
+    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL || 'wss://backend-re92.onrender.com/ws';
     if (!wsUrl) {
       addLog('Error: Backend WebSocket URL not configured');
       return;
