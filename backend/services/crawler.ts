@@ -1,6 +1,6 @@
 import { HTMLRewriter } from "https://deno.land/x/html_rewriter@v0.1.0-pre.17/index.ts";
 import { ResourceManager } from "./resource_manager.ts";
-import { chromium } from "https://deno.land/x/playwright@9.0.2/mod.ts";
+import { chromium } from "https://deno.land/x/puppeteer@16.2.0/mod.ts";
 
 export class CrawlerService {
   private visitedUrls = new Set<string>();
@@ -209,25 +209,18 @@ export class CrawlerService {
       console.log('🔍 Processing:', url);
       this.sendUpdate("link", url);
 
-      // Take screenshot using Playwright
+      // Take screenshot using Puppeteer
       try {
         const browser = await chromium.launch({
-          args: ['--no-sandbox'],
-          executablePath: '/usr/bin/google-chrome-stable'
+          args: ['--no-sandbox', '--disable-setuid-sandbox'],
+          headless: true
         });
-        const context = await browser.newContext({
-          viewport: { width: 1280, height: 800 }
-        });
-        const page = await context.newPage();
         
-        // Set a reasonable timeout
-        await page.setDefaultTimeout(30000);
+        const page = await browser.newPage();
+        await page.setViewport({ width: 1280, height: 800 });
         
         console.log('Taking screenshot of:', url);
-        await page.goto(url, { waitUntil: 'networkidle' });
-        
-        // Wait for content to load
-        await page.waitForLoadState('domcontentloaded');
+        await page.goto(url, { waitUntil: 'networkidle0' });
         
         // Take screenshot
         const screenshot = await page.screenshot({
@@ -243,7 +236,6 @@ export class CrawlerService {
           timestamp: Date.now()
         });
         
-        await context.close();
         await browser.close();
       } catch (error) {
         console.error('Screenshot error:', error);
