@@ -1,29 +1,36 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
+
   let url = "";
   let crawledLinks: string[] = [];
   let screenshots: Map<string, string> = new Map();
   let logs: string[] = [];
-  let crawlerWs: WebSocket;
+  let crawlerWs: WebSocket | null = null;
   let isProcessing = false;
-  let resourceManifests: Map<string, {
-    scripts: string[];
-    styles: string[];
-    images: string[];
-    fonts: string[];
-  }> = new Map();
   let reconnectAttempts = 0;
   const MAX_RECONNECT_ATTEMPTS = 5;
   const RECONNECT_DELAY = 5000;
 
   function addLog(message: string) {
     logs = [...logs, `[${new Date().toLocaleTimeString()}] ${message}`];
+    console.log(message); // Also log to console for debugging
   }
 
   function initWebSocket() {
-    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL || 'ws://localhost:10000/ws';
+    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL;
+    if (!wsUrl) {
+      addLog('Error: Backend WebSocket URL not configured');
+      return;
+    }
+
     console.log('Connecting to WebSocket:', wsUrl);
+    addLog(`Connecting to WebSocket: ${wsUrl}`);
     
     try {
+      if (crawlerWs && crawlerWs.readyState === WebSocket.OPEN) {
+        crawlerWs.close();
+      }
+
       crawlerWs = new WebSocket(wsUrl);
 
       crawlerWs.onopen = () => {
@@ -33,73 +40,39 @@
       };
 
       crawlerWs.onmessage = async (event) => {
-        const data = JSON.parse(event.data);
-        console.log('Received WebSocket message:', data);
-        
-        if (data.type === "ping") {
-          crawlerWs.send(JSON.stringify({ type: "pong" }));
-          return;
-        }
-        
-        switch (data.type) {
-          case 'link':
-            crawledLinks = [...crawledLinks, data.data];
-            // Request screenshot for the new link
-            try {
-              console.log('Requesting screenshot for URL:', data.data);
-              const response = await fetch('/api/screenshot', {
-                method: 'POST',
-                headers: {
-                  'Content-Type': 'application/json',
-                },
-                body: JSON.stringify({ url: data.data })
-              });
-              
-              if (response.ok) {
-                const contentType = response.headers.get('content-type');
-                if (contentType && contentType.includes('image/')) {
-                  const blob = await response.blob();
-                  const imageUrl = URL.createObjectURL(blob);
-                  screenshots.set(data.data, imageUrl);
-                  screenshots = screenshots; // Trigger reactivity
-                  addLog(`Screenshot taken: ${data.data}`);
-                } else {
-                  const text = await response.text();
-                  addLog(`Screenshot error: Invalid response type - ${contentType}`);
-                  console.error('Invalid response:', text);
-                }
-              } else {
-                const text = await response.text();
-                try {
-                  const error = JSON.parse(text);
-                  addLog(`Screenshot error: ${error.error || text}`);
-                } catch {
-                  addLog(`Screenshot error: ${text}`);
-                }
-              }
-            } catch (error) {
-              console.error('Screenshot request error:', error);
-              addLog(`Screenshot error: ${error.message}`);
-            }
-            break;
-          case 'error':
-            addLog(`Error: ${data.data}`);
-            break;
-          case 'info':
-            addLog(data.data);
-            break;
-          case 'crawling_complete':
-            isProcessing = false;
-            addLog('Crawling completed');
-            break;
-          case 'processed_content':
-            // Handle processed content...
-            break;
+        try {
+          const data = JSON.parse(event.data);
+          console.log('Received WebSocket message:', data);
+          
+          if (data.type === "ping") {
+            crawlerWs?.send(JSON.stringify({ type: "pong" }));
+            return;
+          }
+          
+          switch (data.type) {
+            case 'link':
+              crawledLinks = [...crawledLinks, data.data];
+              addLog(`Found link: ${data.data}`);
+              break;
+            case 'error':
+              addLog(`Error: ${data.data}`);
+              break;
+            case 'info':
+              addLog(data.data);
+              break;
+            case 'crawling_complete':
+              isProcessing = false;
+              addLog('Crawling completed');
+              break;
+          }
+        } catch (error) {
+          console.error('Error processing message:', error);
+          addLog(`Error processing message: ${error.message}`);
         }
       };
 
-      crawlerWs.onclose = () => {
-        console.log('WebSocket connection closed');
+      crawlerWs.onclose = (event) => {
+        console.log('WebSocket connection closed', event);
         addLog('Connection closed');
         
         if (reconnectAttempts < MAX_RECONNECT_ATTEMPTS) {
@@ -130,6 +103,9 @@
     }
 
     try {
+      // Validate URL
+      new URL(url);
+
       if (!crawlerWs || crawlerWs.readyState !== WebSocket.OPEN) {
         addLog('Reconnecting to server...');
         initWebSocket();
@@ -169,7 +145,7 @@
 <main class="container">
   <h1>Web Crawler & Screenshot Tool</h1>
   
-  <div class="input-section">
+  <div class="input-container">
     <input
       type="text"
       bind:value={url}
@@ -182,31 +158,22 @@
   </div>
 
   <div class="results-container">
-    <div class="links-section">
-      <h2>Found Links ({crawledLinks.length})</h2>
-      <div class="links-list">
+    {#if crawledLinks.length > 0}
+      <h2>Crawled Links ({crawledLinks.length})</h2>
+      <ul>
         {#each crawledLinks as link}
-          <div class="link-item">
-            <a href={link} target="_blank" rel="noopener noreferrer">{link}</a>
-            {#if screenshots.has(link)}
-              <img
-                src={screenshots.get(link)}
-                alt={`Screenshot of ${link}`}
-                loading="lazy"
-              />
-            {/if}
-          </div>
+          <li>{link}</li>
         {/each}
-      </div>
-    </div>
+      </ul>
+    {/if}
 
-    <div class="logs-section">
+    <div class="logs">
       <h2>Logs</h2>
-      <div class="logs-list">
+      <pre>
         {#each logs as log}
-          <div class="log-item">{log}</div>
+          {log}
         {/each}
-      </div>
+      </pre>
     </div>
   </div>
 </main>
@@ -220,10 +187,11 @@
 
   h1 {
     text-align: center;
+    color: #333;
     margin-bottom: 2rem;
   }
 
-  .input-section {
+  .input-container {
     display: flex;
     gap: 1rem;
     margin-bottom: 2rem;
@@ -240,7 +208,7 @@
   button {
     padding: 0.5rem 1rem;
     font-size: 1rem;
-    background-color: #4CAF50;
+    background-color: #007bff;
     color: white;
     border: none;
     border-radius: 4px;
@@ -248,54 +216,34 @@
   }
 
   button:disabled {
-    background-color: #cccccc;
+    background-color: #ccc;
     cursor: not-allowed;
   }
 
   .results-container {
-    display: grid;
-    grid-template-columns: 2fr 1fr;
-    gap: 2rem;
+    margin-top: 2rem;
   }
 
-  .links-section, .logs-section {
-    border: 1px solid #eee;
-    border-radius: 4px;
-    padding: 1rem;
+  ul {
+    list-style: none;
+    padding: 0;
   }
 
-  .links-list, .logs-list {
-    max-height: 600px;
-    overflow-y: auto;
-  }
-
-  .link-item {
-    margin-bottom: 1rem;
-    padding: 1rem;
-    border: 1px solid #eee;
-    border-radius: 4px;
-  }
-
-  .link-item img {
-    max-width: 100%;
-    margin-top: 1rem;
-    border: 1px solid #eee;
-    border-radius: 4px;
-  }
-
-  .log-item {
+  li {
     padding: 0.5rem;
     border-bottom: 1px solid #eee;
+  }
+
+  .logs {
+    margin-top: 2rem;
+    background-color: #f8f9fa;
+    padding: 1rem;
+    border-radius: 4px;
+  }
+
+  pre {
+    margin: 0;
+    white-space: pre-wrap;
     font-family: monospace;
-  }
-
-  a {
-    color: #2196F3;
-    text-decoration: none;
-    word-break: break-all;
-  }
-
-  a:hover {
-    text-decoration: underline;
   }
 </style>
